@@ -126,6 +126,10 @@ export interface HudData {
   /** 顶部安全区（HUD 虚拟单位，微信真机避开刘海/胶囊，浏览器为 0） */
   safeTop: number;
   kills: number;
+  /** 累计金币（左上角金币面板） */
+  coins: number;
+  /** 金币拾取飞向面板的特效（p: 0~1 飞行进度） */
+  coinFlies: Array<{ x0: number; y0: number; p: number }>;
   banner: string;
   bannerSub: string;
   bannerAlpha: number;
@@ -237,6 +241,13 @@ const BLOCK_COLORS: Record<number, string> = {
   11: '#FAFAFA', 12: '#C62828', 13: '#6D4C41', 14: '#B3E5FC', 15: '#ECEFF1',
 };
 
+/** 金币数展示：过万缩写 */
+function fmtCoins(n: number): string {
+  if (n >= 100000) return `${Math.floor(n / 10000)}万`;
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
+  return String(n);
+}
+
 function mainStat(item: EquipDef): string {
   switch (item.slot) {
     case 'weapon': return `攻${item.dmg}`;
@@ -319,6 +330,20 @@ export class Hud {
   private adSecondBtn: Rect & { id: string } = { x: 0, y: 0, w: 0, h: 0, id: 'adSecond' };
   /** 音乐开关按钮（右上角功能行） */
   private musicBtn: Rect & { id: string } = { x: 0, y: 0, w: 0, h: 0, id: 'music' };
+  /** 分享按钮（音乐左侧），点击展开转发 / 朋友圈 / 海报三项 */
+  private shareBtn: Rect & { id: string } = { x: 0, y: 0, w: 0, h: 0, id: 'share' };
+  private shareItems: Array<Rect & { id: string }> = [];
+  private shareOpen = false;
+
+  // ---------------- 金币面板 / 拾取特效 ----------------
+  private coinPanel: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  /** 上一帧金币数（用于检测增加并触发弹跳） */
+  private coinShown = -1;
+  /** 金币面板弹跳强度 1→0 */
+  private coinPunch = 0;
+  private coinSparks: Array<{ x: number; y: number; vx: number; vy: number; t: number; ttl: number }> = [];
+  private coinPops: Array<{ text: string; t: number; ttl: number }> = [];
+  private lastDrawT = -1;
   /** 暂停面板：音乐开关按钮 */
   private musTBtn: Rect & { id: string } = { x: 0, y: 0, w: 0, h: 0, id: 'musT' };
   /** 暂停面板：音量滑条轨道（GameRoot 拖动时读取此矩形） */
@@ -387,6 +412,9 @@ export class Hud {
     // === 寻宝模式：顶部中央面板下方的「⚔ 挑战」按钮 ===
     this.challengeBtn = { x: W / 2 - 55 * u, y: 42 * u + this.safeTop, w: 110 * u, h: 26 * u, id: 'challenge' };
 
+    // === 左上：金币面板（血条 / 护盾条下方） ===
+    this.coinPanel = { x: 12 * u, y: 12 * u + this.safeTop + 32 * u, w: 108 * u, h: 20 * u };
+
     // === 顶部横条：右上功能键整体下移，避让微信胶囊区（96×36） ===
     const topY = 52 * u + this.safeTop;
     this.viewBtn = { x: W - 52 * u, y: topY, w: 36 * u, h: 36 * u, id: 'view' };
@@ -395,6 +423,24 @@ export class Hud {
     this.bagBtn = { x: W - 184 * u, y: topY, w: 36 * u, h: 36 * u, id: 'bag' };
     // 音乐开关按钮：背包左侧
     this.musicBtn = { x: W - 228 * u, y: topY, w: 36 * u, h: 36 * u, id: 'music' };
+    // 分享按钮：音乐左侧，点击展开三项分享入口
+    this.shareBtn = { x: W - 272 * u, y: topY, w: 36 * u, h: 36 * u, id: 'share' };
+    this.shareItems = [];
+    {
+      const siW = 124 * u;
+      const siH = 30 * u;
+      const siX = this.shareBtn.x - (siW - this.shareBtn.w);
+      const ids = ['shareFriend', 'shareTimeline', 'sharePoster'];
+      for (let i = 0; i < 3; i++) {
+        this.shareItems.push({
+          x: siX,
+          y: topY + 44 * u + i * (siH + 6 * u),
+          w: siW,
+          h: siH,
+          id: ids[i],
+        });
+      }
+    }
 
     // === 右上：宝剑按钮贴在功能键行下方，避免与「视角/暂停/人物/物品」叠在一起 ===
     this.legendBtn = { x: W - 40 * u, y: topY + 36 * u + 34 * u, r: 24 * u, id: 'legend' };
@@ -472,6 +518,22 @@ export class Hud {
       return null;
     }
     if (this.state !== 'playing') return null;
+
+    // 分享面板展开时优先响应三项入口，点其他位置则收起
+    if (this.shareOpen) {
+      for (const it of this.shareItems) {
+        if (this.inRect(it, x, y)) {
+          this.shareOpen = false;
+          return it.id;
+        }
+      }
+      this.shareOpen = false;
+      return null;
+    }
+    if (this.inRect(this.shareBtn, x, y)) {
+      this.shareOpen = true;
+      return 'share';
+    }
 
     if (this.mode === 'treasure' && this.inRect(this.challengeBtn, x, y)) return 'challenge';
     if (this.freeT > 0 && this.inRect(this.nextWaveBtn, x, y)) return 'nextWave';
@@ -869,6 +931,7 @@ export class Hud {
     this.drawBagButton();
     this.drawViewButton(d);
     this.drawMusicButton();
+    this.drawShareButton(d);
     this.drawLegendButton(d);
     this.drawChestHint(d);
     this.drawBossArrows(d);
@@ -876,6 +939,8 @@ export class Hud {
     this.drawStatusIcons(d);
     this.drawMobNames(d);
     this.drawArenaBossBar(d);
+    this.drawCoinPanel(d);
+    this.drawCoinFlies(d);
     this.drawToasts(d);
     this.drawNextWaveBtn(d); // 自由时间按钮绘制在提示条之上，保证可点区域不被遮挡
 
@@ -1654,6 +1719,177 @@ export class Hud {
       // 关闭状态：红色斜线覆盖
       const dx = b.w * 0.3;
       this.p.polyStroke([[cx - dx, cy + dx], [cx + dx, cy - dx]], '#EF5350', 2.2 * u, false);
+    }
+  }
+
+  /** 右上角分享按钮：点击展开「转发好友 / 朋友圈 / 海报」三项 */
+  private drawShareButton(d: HudData): void {
+    if (d.state !== 'playing') {
+      this.shareOpen = false;
+      return;
+    }
+    if (d.overlay !== 'none') this.shareOpen = false;
+
+    const u = this.u;
+    const b = this.shareBtn;
+    const p = this.p;
+    const active = this.shareOpen;
+    const accent = active ? '#7FE3FF' : '#9FB3C8';
+
+    p.fillRR(b.x, b.y, b.w, b.h, 8 * u, active ? 'rgba(60, 170, 220, 0.24)' : 'rgba(8, 14, 22, 0.58)');
+    p.strokeRR(b.x, b.y, b.w, b.h, 8 * u, active ? '#7FE3FF' : 'rgba(255, 255, 255, 0.18)', 1.5 * u);
+
+    // 经典「分享」图标：三个节点 + 两条连线
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    const r1 = 2.6 * u;
+    const rx = cx + 5.4 * u;
+    const lx = cx - 5.4 * u;
+    const ty = cy - 4.6 * u;
+    const by = cy + 4.6 * u;
+    p.polyStroke([[lx + r1, cy], [rx - r1, ty + r1 * 0.6]], accent, 1.4 * u, false);
+    p.polyStroke([[lx + r1, cy], [rx - r1, by - r1 * 0.6]], accent, 1.4 * u, false);
+    p.circle(lx, cy, r1, accent);
+    p.circle(rx, ty, r1, accent);
+    p.circle(rx, by, r1, accent);
+
+    if (!this.shareOpen) return;
+
+    // 展开面板
+    const first = this.shareItems[0];
+    const last = this.shareItems[2];
+    const pad = 6 * u;
+    const px = first.x - pad;
+    const py = first.y - pad;
+    const pw = first.w + pad * 2;
+    const ph = last.y + last.h - first.y + pad * 2;
+    p.fillRR(px, py, pw, ph, 10 * u, 'rgba(8, 12, 22, 0.94)');
+    p.strokeRR(px, py, pw, ph, 10 * u, 'rgba(127, 227, 255, 0.42)', 1.2 * u);
+
+    const labels = ['转发给好友', '分享朋友圈', '生成分享海报'];
+    const icons = ['↗', '◎', '▣'];
+    for (let i = 0; i < this.shareItems.length; i++) {
+      const it = this.shareItems[i];
+      p.fillRR(it.x + 3 * u, it.y + 2 * u, it.w - 6 * u, it.h - 4 * u, 7 * u, 'rgba(24, 38, 58, 0.9)');
+      p.strokeRR(it.x + 3 * u, it.y + 2 * u, it.w - 6 * u, it.h - 4 * u, 7 * u, 'rgba(127, 227, 255, 0.22)', 1 * u);
+      p.text(icons[i], it.x + 16 * u, it.y + it.h / 2, { size: 14 * u, color: '#7FE3FF', align: 'center' });
+      p.text(labels[i], it.x + 30 * u, it.y + it.h / 2, { size: 12.5 * u, color: '#DCE9F5', align: 'left' });
+    }
+  }
+
+  /** 左上角金币面板：金币图标 + 数量，拾取时弹跳并迸发金色粒子 */
+  private drawCoinPanel(d: HudData): void {
+    const u = this.u;
+    const r = this.coinPanel;
+    const p = this.p;
+    const dt = this.lastDrawT < 0 ? 0.016 : Math.min(0.05, Math.max(0, d.time - this.lastDrawT));
+    this.lastDrawT = d.time;
+
+    if (this.coinShown < 0) this.coinShown = d.coins;
+    else if (d.coins > this.coinShown) {
+      this.coinPunch = 1;
+      this.spawnCoinBurst(d.coins - this.coinShown);
+      this.coinShown = d.coins;
+    } else if (d.coins !== this.coinShown) this.coinShown = d.coins;
+
+    this.coinPunch = Math.max(0, this.coinPunch - dt * 3.4);
+    const k = this.coinPunch;
+    const sc = 1 + 0.26 * k;
+    const cy = r.y + r.h / 2;
+
+    if (k > 0.01) p.glow(r.x + 14 * u, cy, 26 * u * (0.8 + k * 0.6), '#FFD54F', 0.22 * k);
+    p.fillRR(r.x, r.y, r.w, r.h, r.h / 2, 'rgba(10, 16, 26, 0.66)');
+    p.strokeRR(r.x, r.y, r.w, r.h, r.h / 2, k > 0.01 ? 'rgba(255, 213, 79, 0.95)' : 'rgba(255, 213, 79, 0.5)', 1.1 * u);
+    p.rect(r.x + r.w * 0.5, r.y + 3 * u, 1 * u, r.h - 6 * u, 'rgba(255, 213, 79, 0.16)');
+
+    this.drawCoinIcon(r.x + 13 * u, cy, 7.4 * u * sc);
+    p.text(fmtCoins(d.coins), r.x + 25 * u, cy, {
+      size: 12.5 * u * sc, color: '#FFE082', align: 'left',
+      stroke: '#3E2A00', strokeWidth: 3 * u,
+    });
+
+    // 金色粒子
+    for (let i = this.coinSparks.length - 1; i >= 0; i--) {
+      const s = this.coinSparks[i];
+      s.t -= dt;
+      if (s.t <= 0) { this.coinSparks.splice(i, 1); continue; }
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      s.vy += 120 * u * dt;
+      const a = Math.max(0, s.t / s.ttl);
+      p.circle(s.x, s.y, 2.2 * u * a + 0.4 * u, a > 0.5 ? '#FFF59D' : '#FFD54F', a);
+    }
+    // +N 飘字
+    for (let i = this.coinPops.length - 1; i >= 0; i--) {
+      const c = this.coinPops[i];
+      c.t -= dt;
+      if (c.t <= 0) { this.coinPops.splice(i, 1); continue; }
+      const a = Math.min(1, c.t / 0.25);
+      p.text(c.text, r.x + r.w + 8 * u, cy - (1 - c.t / c.ttl) * 16 * u, {
+        size: 12 * u, color: '#FFE082', align: 'left', alpha: a,
+        stroke: '#3E2A00', strokeWidth: 3 * u,
+      });
+    }
+  }
+
+  /** 金币图标：外圈金环 + 中心方孔 + 高光 */
+  private drawCoinIcon(cx: number, cy: number, rr: number): void {
+    const p = this.p;
+    const u = this.u;
+    p.circle(cx, cy, rr, '#FFC107');
+    p.circleStroke(cx, cy, rr, '#FFE082', 1.3 * u);
+    p.circle(cx, cy, rr * 0.62, '#FFD54F');
+    p.rect(cx - rr * 0.26, cy - rr * 0.26, rr * 0.52, rr * 0.52, '#6B4700');
+    p.circleStroke(cx, cy, rr * 0.78, 'rgba(255, 255, 255, 0.35)', 1 * u);
+  }
+
+  /** 拾取金币时：面板迸发金色粒子 + 「+N」飘字 */
+  private spawnCoinBurst(gain: number): void {
+    const u = this.u;
+    const r = this.coinPanel;
+    const cx = r.x + 13 * u;
+    const cy = r.y + r.h / 2;
+    const n = Math.min(16, 8 + gain);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = (40 + Math.random() * 90) * u;
+      const ttl = 0.45 + Math.random() * 0.25;
+      this.coinSparks.push({
+        x: cx, y: cy,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40 * u,
+        t: ttl, ttl,
+      });
+    }
+    this.coinPops.push({ text: `+${gain}`, t: 0.8, ttl: 0.8 });
+  }
+
+  /** 拾取的金币从屏幕位置沿抛物线飞向金币面板 */
+  private drawCoinFlies(d: HudData): void {
+    const u = this.u;
+    const r = this.coinPanel;
+    const p = this.p;
+    const tx = r.x + 13 * u;
+    const ty = r.y + r.h / 2;
+    for (const f of d.coinFlies) {
+      const prog = Math.min(1, Math.max(0, f.p));
+      if (prog >= 0.995) continue;
+      // 拖尾
+      for (let k = 3; k >= 1; k--) {
+        const pk = Math.max(0, prog - k * 0.055);
+        const e = pk * pk * (3 - 2 * pk);
+        const x = f.x0 + (tx - f.x0) * e;
+        const y = f.y0 + (ty - f.y0) * e - Math.sin(Math.PI * pk) * 78 * u;
+        p.circle(x, y, (4.6 - k) * u, '#FFD54F', 0.26 - k * 0.05);
+      }
+      const e = prog * prog * (3 - 2 * prog);
+      const x = f.x0 + (tx - f.x0) * e;
+      const y = f.y0 + (ty - f.y0) * e - Math.sin(Math.PI * prog) * 78 * u;
+      const rr = (5 - prog * 1.8) * u;
+      const a = 1 - prog * 0.35;
+      p.glow(x, y, rr * 3, '#FFD54F', 0.2 * a);
+      p.circle(x, y, rr, '#FFD54F', a);
+      p.circle(x, y, rr * 0.62, '#FFF59D', a);
+      p.rect(x - rr * 0.22, y - rr * 0.22, rr * 0.44, rr * 0.44, 'rgba(122, 75, 0, 0.9)');
     }
   }
 

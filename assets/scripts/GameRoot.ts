@@ -35,6 +35,7 @@ import {
 import { ProjectileSystem } from './game/Projectile';
 import { buildBoxesMesh, getVoxGhostMaterial, getVoxMaterial, type BoxDef } from './game/VoxMesh';
 import { AD_MOCK_SECONDS, AD_MOCK_SECONDS_ULT, AdService, disposeAds, interstitialIntervalMs, preloadAds, setNativeAdVisible, showInterstitialLater, type AdResult, type AdScene } from './core/Ad';
+import { initShare, saveSharePoster, shareToFriend } from './core/Share';
 import { initGameClub, setGameClubVisible } from './core/GameClub';
 
 const { ccclass } = _decorator;
@@ -54,7 +55,7 @@ const KEY = {
 type GameState = 'loading' | 'menu' | 'playing' | 'paused' | 'dead' | 'fail';
 
 const BASE_HP = 100;
-const MAX_ALIVE_MOBS = 14;
+const MAX_ALIVE_MOBS = 22;
 
 /** v2.5 大招：三个技能各自充能，击杀可加速 */
 type UltId = 'meteor' | 'thunder' | 'frost';
@@ -84,10 +85,11 @@ const WORLD_BOSSES: Array<{ kind: MobKind; x: number; z: number; scale: number }
   { kind: 'titan_iron', x: 60.5, z: 44.5, scale: 1 },
   { kind: 'titan_bone', x: 0.5, z: -86.5, scale: 1 },
   // v2.6 四方神兽：朱雀 / 玄武 / 白虎 / 霸王龙（模型 3~4.7m，缩放后渲染高约 4.5~5m）
-  { kind: 'boss_zhuque', x: -104.5, z: 86.5, scale: 1.2 },    // 西北远境：朱雀
-  { kind: 'boss_xuanwu', x: 104.5, z: -86.5, scale: 1.45 },   // 东南远境：玄武
-  { kind: 'boss_baihu', x: -44.5, z: -128.5, scale: 1.25 },   // 西南：白虎
-  { kind: 'boss_rex', x: 52.5, z: 128.5, scale: 1.1 },        // 南偏东：霸王龙
+  // v2.7 四方神兽迁入出生广场周边（烈焰巨龙 / 熔岩泰坦旁），各自 11m 领地互不重叠
+  { kind: 'boss_zhuque', x: -24.5, z: 18.5, scale: 1.2 },    // 广场西北：朱雀
+  { kind: 'boss_xuanwu', x: 22.5, z: -24.5, scale: 1.45 },    // 广场东南：玄武
+  { kind: 'boss_baihu', x: -22.5, z: -22.5, scale: 1.25 },    // 广场西南：白虎
+  { kind: 'boss_rex', x: 16.5, z: 28.5, scale: 1.1 },         // 广场东北：霸王龙
 ];
 
 /** 第一人称手持模型基准变换（相机局部坐标）：右前方、略微下压、刃口朝右上 */
@@ -261,6 +263,16 @@ export class GameRoot extends Component {
 
   private toasts: ToastMsg[] = [];
 
+  // ---------------- 金币 ----------------
+  /** 累计金币（本地存档） */
+  private coins = 0;
+  private static readonly COIN_STORAGE_KEY = 'dogcat_coins_v1';
+  /** 拾取金币时的 HUD 飞行特效（世界坐标已换算到 HUD 坐标） */
+  private coinFlies: Array<{ x0: number; y0: number; t: number; ttl: number; value: number }> = [];
+  /** 金币存档脏标记，定时落盘避免频繁写 */
+  private coinDirty = false;
+  private coinSaveT = 0;
+
   // 宝箱 / 奖励面板
   private chests!: ChestField;
   private reward: ChestReward | null = null;
@@ -384,12 +396,18 @@ export class GameRoot extends Component {
     this.updateHandModel();
     this.player.spawn(this.spawnX, this.spawnY, this.spawnZ);
     this.loadSkinUnlocks();
+    this.loadCoins();
     this.applyMapEnv();
     this.blockName = BlockNames[HOTBAR_BLOCKS[2]]; // STONE
     (globalThis as any).__game = this;
     this.detectSafeArea();
     this.setupAudio();
     initGameClub();
+    // 微信分享：开启右上角菜单的转发与朋友圈，并注册动态分享卡片
+    initShare(() => ({
+      title: `像素荒野寻宝｜已推进到第 ${Math.max(1, this.wave)} 波，击杀 ${this.kills}，来挑战巨龙与泰坦`,
+      query: 'from=share',
+    }));
     // 预热激励 / 插屏 / 原生模板广告，降低首次点击与菜单展示的等待
     preloadAds();
 
@@ -671,10 +689,12 @@ export class GameRoot extends Component {
     node.parent = sceneRoot;
 
     const preset = SKIN_PRESETS[Math.min(this.skinIndex, SKIN_PRESETS.length - 1)];
+    const skinIdx = Math.min(this.skinIndex, SKIN_PRESETS.length - 1);
     const skin = preset.skin;
     const shirt = preset.shirt;
     const pants = preset.pants;
     const shoes = preset.shoes;
+    const accent = preset.accent;
 
     const boxes: BoxDef[] = [
       { x: -0.26, y: 0, z: -0.13, w: 0.24, h: 0.75, d: 0.26, color: pants },
@@ -701,6 +721,47 @@ export class GameRoot extends Component {
     ];
     for (const z of [-0.258, 0.25]) {
       for (const f of face) boxes.push({ ...f, z, d: 0.008 });
+    }
+
+    // v2.7 人物装备层：肩甲 / 腰带扣 / 胸口纹章 / 护膝 / 靴口（全部使用皮肤强调色）
+    boxes.push(
+      { x: -0.5, y: 1.34, z: -0.17, w: 0.2, h: 0.15, d: 0.34, color: accent },
+      { x: 0.3, y: 1.34, z: -0.17, w: 0.2, h: 0.15, d: 0.34, color: accent },
+      { x: -0.29, y: 0.7, z: -0.16, w: 0.58, h: 0.08, d: 0.33, color: '#4E342E' },
+      { x: -0.08, y: 0.69, z: -0.18, w: 0.16, h: 0.1, d: 0.34, color: accent },
+      { x: -0.1, y: 1.02, z: -0.155, w: 0.2, h: 0.2, d: 0.32, color: accent },
+      { x: -0.01, y: 1.02, z: -0.16, w: 0.02, h: 0.12, d: 0.33, color: '#FFFFFF' },
+      { x: -0.27, y: 0.3, z: -0.145, w: 0.22, h: 0.08, d: 0.3, color: accent },
+      { x: 0.05, y: 0.3, z: -0.145, w: 0.22, h: 0.08, d: 0.3, color: accent },
+      { x: -0.27, y: 0.1, z: -0.15, w: 0.26, h: 0.06, d: 0.3, color: accent },
+      { x: 0.01, y: 0.1, z: -0.15, w: 0.26, h: 0.06, d: 0.3, color: accent },
+    );
+    // 各皮肤专属轮廓：黄金骑士冠饰 / 铂金头环 / 钻石晶刺 / 传说披风王冠
+    if (skinIdx === 2) {
+      boxes.push(
+        { x: -0.04, y: 1.96, z: -0.24, w: 0.08, h: 0.16, d: 0.48, color: '#FFD54F' },
+        { x: -0.26, y: 2.02, z: -0.06, w: 0.52, h: 0.06, d: 0.12, color: '#FFE082' },
+      );
+    } else if (skinIdx === 3) {
+      boxes.push(
+        { x: -0.27, y: 1.92, z: -0.27, w: 0.54, h: 0.05, d: 0.54, color: '#BFE9F2' },
+        { x: -0.03, y: 1.9, z: -0.3, w: 0.06, h: 0.22, d: 0.06, color: '#E1F5FE' },
+      );
+    } else if (skinIdx === 4) {
+      boxes.push(
+        { x: -0.56, y: 1.4, z: -0.12, w: 0.1, h: 0.26, d: 0.1, color: '#9FDCFF' },
+        { x: 0.46, y: 1.4, z: -0.12, w: 0.1, h: 0.26, d: 0.1, color: '#9FDCFF' },
+        { x: -0.06, y: 1.8, z: -0.26, w: 0.12, h: 0.1, d: 0.06, color: '#E1F5FE' },
+      );
+    } else if (skinIdx === 5) {
+      boxes.push(
+        { x: -0.31, y: 0.42, z: 0.16, w: 0.62, h: 1.06, d: 0.06, color: '#4527A0' },
+        { x: -0.31, y: 1.42, z: 0.16, w: 0.62, h: 0.1, d: 0.08, color: '#B388FF' },
+        { x: -0.26, y: 1.97, z: -0.26, w: 0.52, h: 0.12, d: 0.52, color: '#FFD54F' },
+        { x: -0.22, y: 2.06, z: -0.22, w: 0.1, h: 0.1, d: 0.1, color: '#FFF59D' },
+        { x: -0.05, y: 2.06, z: -0.22, w: 0.1, h: 0.1, d: 0.1, color: '#FFF59D' },
+        { x: 0.12, y: 2.06, z: -0.22, w: 0.1, h: 0.1, d: 0.1, color: '#FFF59D' },
+      );
     }
 
     const mr = node.addComponent(MeshRenderer);
@@ -1003,6 +1064,18 @@ export class GameRoot extends Component {
       this.toggleMusic();
       return;
     }
+    if (hit === 'shareFriend') {
+      this.doShareFriend();
+      return;
+    }
+    if (hit === 'shareTimeline') {
+      this.showShareTimelineHint();
+      return;
+    }
+    if (hit === 'sharePoster') {
+      this.doSaveSharePoster();
+      return;
+    }
     if (hit === 'legend') {
       this.onLegendClick();
       return;
@@ -1129,6 +1202,9 @@ export class GameRoot extends Component {
       else if (hit === 'jump') this.jumpHeld = true;
       else if (hit === 'view') this.toggleViewMode();
       else if (hit === 'music') this.toggleMusic();
+      else if (hit === 'shareFriend') this.doShareFriend();
+      else if (hit === 'shareTimeline') this.showShareTimelineHint();
+      else if (hit === 'sharePoster') this.doSaveSharePoster();
       else if (hit === 'legend') this.onLegendClick();
       else if (hit === 'mapBtn') this.mapPanelOpen = true;
       else if (hit === 'mapClose') this.mapPanelOpen = false;
@@ -2347,6 +2423,10 @@ export class GameRoot extends Component {
       if (loot.length) {
         this.pushToast(`大宝箱：${loot.map((i) => i.name).join('、')}`, '#FFD54F');
       }
+      // 世界 BOSS 金币雨：16 枚大额金币四散弹出
+      for (let i = 0; i < 16; i++) {
+        this.drops.spawnCoin(mob.x + (Math.random() - 0.5) * 2.6, mob.y + 0.5, mob.z + (Math.random() - 0.5) * 2.6, 5);
+      }
       return;
     }
     if (mob.def.hostile) {
@@ -2367,6 +2447,18 @@ export class GameRoot extends Component {
       // v2.0 消耗品掉落（精英/BOSS 额外能量药水）
       const cons = rollConsumableDrop(this.wave, mob.def.worldBoss || mob.scale >= 2);
       if (cons) this.drops.spawnConsumable(mob.x, mob.y + 0.3, mob.z, cons);
+      // 金币掉落：普通 2~4 枚，精英/BOSS 更多且面值更高
+      const big = mob.scale >= 2;
+      const coinCount = big ? 8 : mob.scale >= 1.2 ? 5 : 2 + ((Math.random() * 3) | 0);
+      const coinValue = big ? 4 : mob.scale >= 1.2 ? 2 : 1;
+      for (let i = 0; i < coinCount; i++) {
+        this.drops.spawnCoin(
+          mob.x + (Math.random() - 0.5) * 1.3,
+          mob.y + 0.45,
+          mob.z + (Math.random() - 0.5) * 1.3,
+          coinValue,
+        );
+      }
     } else {
       // 小动物掉补血包
       this.drops.spawnHeal(mob.x, mob.y + 0.3, mob.z, 10);
@@ -2827,6 +2919,40 @@ export class GameRoot extends Component {
     this.openAd('legend', () => this.grantLegendary());
   }
 
+  /** 分享面板：主动转发给好友 */
+  private doShareFriend(): void {
+    const ok = shareToFriend({
+      title: `像素荒野寻宝｜已推进到第 ${Math.max(1, this.wave)} 波，击杀 ${this.kills}，来挑战巨龙与泰坦`,
+    });
+    if (!ok) this.pushToast('当前环境不支持转发，请在微信中运行', '#FFB74D');
+  }
+
+  /** 分享面板：朋友圈需通过右上角菜单触发，这里给出引导 */
+  private showShareTimelineHint(): void {
+    this.pushToast('点击右上角「···」→ 分享到朋友圈', '#7FE3FF');
+  }
+
+  /** 分享面板：生成战绩海报并保存到相册 */
+  private doSaveSharePoster(): void {
+    this.pushToast('正在生成分享海报…', '#7FE3FF');
+    saveSharePoster({
+      title: '像素荒野寻宝',
+      subtitle: '方块世界 · 挑战巨龙与泰坦',
+      lines: [
+        { label: '当前波次', value: String(Math.max(1, this.wave)) },
+        { label: '累计击杀', value: String(this.kills) },
+        { label: '背包武器', value: `${this.backpack.filter(Boolean).length} 把` },
+      ],
+      footer: '微信搜索「像素荒野寻宝」立即开玩',
+    }).then((result) => {
+      if (result === 'saved') this.pushToast('分享海报已保存到相册', '#8FDD6A');
+      else if (result === 'denied') this.pushToast('需要相册权限才能保存海报', '#FFB74D');
+      else if (result === 'unsupported') this.pushToast('当前环境不支持生成海报', '#FFB74D');
+      else if (result === 'cancelled') this.pushToast('已取消保存', '#9FB3C8');
+      else this.pushToast('海报生成失败，请稍后重试', '#EF5350');
+    }).catch(() => this.pushToast('海报生成失败，请稍后重试', '#EF5350'));
+  }
+
   /** 发放传说武器：优先未拥有的 tier5；全都有则给随机一把 +5（上限 +10） */
   private grantLegendary(): void {
     const legend = pickLegendary(this.ownedWeaponIds(), this.wave);
@@ -2980,6 +3106,32 @@ export class GameRoot extends Component {
       t.t -= dt;
       if (t.t <= 0) this.dmgTexts.splice(i, 1);
     }
+  }
+
+  /** 金币飞行特效计时 + 存档节流落盘 */
+  private updateCoinFx(dt: number): void {
+    for (let i = this.coinFlies.length - 1; i >= 0; i--) {
+      const f = this.coinFlies[i];
+      f.t -= dt;
+      if (f.t <= 0) this.coinFlies.splice(i, 1);
+    }
+    if (this.coinDirty) {
+      this.coinSaveT += dt;
+      if (this.coinSaveT >= 2) {
+        this.coinSaveT = 0;
+        this.coinDirty = false;
+        try { sys.localStorage.setItem(GameRoot.COIN_STORAGE_KEY, String(this.coins)); } catch (e) { /* 忽略 */ }
+      }
+    }
+  }
+
+  /** 读取本地金币存档 */
+  private loadCoins(): void {
+    try {
+      const raw = sys.localStorage.getItem(GameRoot.COIN_STORAGE_KEY);
+      const v = raw ? parseInt(raw, 10) : 0;
+      if (isFinite(v) && v > 0) this.coins = v;
+    } catch (e) { /* 忽略 */ }
   }
 
   private updateFx(dt: number): void {
@@ -3612,6 +3764,7 @@ export class GameRoot extends Component {
       return;
     }
     this.updateDmgTexts(d);
+    this.updateCoinFx(d);
     this.tickUlts(d);
     this.updateBombs(d);
     this.projectiles.update(
@@ -3685,24 +3838,27 @@ export class GameRoot extends Component {
           this.chests.spawn(s.x, gy, s.z, [2, 4, 7][s.ring] || 7, true);
         }
       }
-      // 世界 BOSS 懒生成（走近 48m 且区块就绪才生成实体，本局一次）
+      // 世界 BOSS 懒生成（走近 64m 且区块就绪才生成实体，本局一次；四方神兽已聚在广场，统一加载避免逐个弹出）
       for (let i = 0; i < WORLD_BOSSES.length; i++) {
         if (this.bossSpawned[i]) continue;
         const b = WORLD_BOSSES[i];
         const bdx = b.x - this.player.pos.x;
         const bdz = b.z - this.player.pos.z;
-        if (bdx * bdx + bdz * bdz > 48 * 48) continue;
+        if (bdx * bdx + bdz * bdz > 64 * 64) continue;
         const bm = this.mobs.spawn(b.kind, b.x, b.z, { scale: b.scale });
         if (bm) {
           this.bossSpawned[i] = true;
           this.pushToast(`世界BOSS · ${mobName(b.kind)} 就在附近！`, '#FFD54F');
         }
       }
-      // v2.5 野外主动动物：密度提升（间隔 22s→12s，上限 2→5）
+      // v2.7 野外主动动物：密度翻倍（间隔 12s→6s，同屏上限 5→16，每轮最多 2 只）
       this.wildT -= d;
       if (this.wildT <= 0) {
-        this.wildT = 12;
-        this.mobs.countWild() < 5 && this.spawnWildAnimal();
+        this.wildT = 6;
+        if (this.mobs.countWild() < 16) {
+          this.spawnWildAnimal();
+          if (this.mobs.countWild() < 16) this.spawnWildAnimal();
+        }
       }
     }
 
@@ -3764,7 +3920,19 @@ export class GameRoot extends Component {
     // 掉落物拾取
     const picked = this.drops.update(d, this.player.pos.x, this.player.pos.y, this.player.pos.z);
     for (const d2 of picked) {
-      if (d2.item) this.applyEquip(d2.item);
+      if (d2.coin > 0) {
+        this.coins += d2.coin;
+        this.coinDirty = true;
+        // 金币从拾取处的屏幕位置飞向 HUD 金币面板
+        const s = this.projectHud(d2.px, d2.py, d2.pz);
+        this.coinFlies.push({
+          x0: s ? s.x : this.lastW * 0.5,
+          y0: s ? s.y : this.lastH * 0.62,
+          t: 0.55,
+          ttl: 0.55,
+          value: d2.coin,
+        });
+      } else if (d2.item) this.applyEquip(d2.item);
       else if (d2.cons) {
         if (this.addConsumable(d2.cons)) this.pushToast(`拾取 ${CONSUMABLES[d2.cons].name}`, CONSUMABLES[d2.cons].color);
         else this.pushToast(`${CONSUMABLES[d2.cons].name} 已满`, 'rgba(255,255,255,0.7)');
@@ -4085,6 +4253,10 @@ export class GameRoot extends Component {
       bombArmed: this.bombArmed,
       safeTop: this.safeTopU,
       kills: this.kills,
+      coins: this.coins,
+      coinFlies: this.coinFlies.map((f) => ({
+        x0: f.x0, y0: f.y0, p: 1 - Math.max(0, f.t) / f.ttl,
+      })),
       banner: this.banner,
       bannerAlpha: this.bannerT > 0 ? Math.min(1, this.bannerT / 0.6) : 0,
       toasts: this.toasts,

@@ -19,16 +19,20 @@ export interface CharCfg {
 
 export const CFG = {
   AD_UNIT_ID: 'adunit-4c682a98c0c5ed45',
-  // 激励视频广告位（留空则自动降级为模拟广告）
+  // 激励视频广告位：三个广告位按场景分流，便于后台分别统计；
+  // 任一位创建失败会自动降级为游戏内模拟广告，不影响玩法。
   AD_SCENES: {
-    legend: 'adunit-4c682a98c0c5ed45',   // 绝世武器
+    // 激励广告（主位）：对局内高频领取
     revive: 'adunit-4c682a98c0c5ed45',   // 死亡复活
     chest: 'adunit-4c682a98c0c5ed45',    // 宝箱加开
-    equip: 'adunit-4c682a98c0c5ed45',    // 角色面板领装备
-    skin: 'adunit-4c682a98c0c5ed45',     // 皮肤解锁
-    bag: 'adunit-4c682a98c0c5ed45',      // 物品栏图鉴领装备
-    map: 'adunit-4c682a98c0c5ed45',      // 新地图解锁
     ult: 'adunit-4c682a98c0c5ed45',      // 大招解锁（3 次）
+    // 激励广告2：养成与解锁
+    equip: 'adunit-a781cb0ff398bc70',    // 角色面板领装备
+    bag: 'adunit-a781cb0ff398bc70',      // 物品栏图鉴领装备
+    skin: 'adunit-a781cb0ff398bc70',     // 皮肤解锁
+    map: 'adunit-a781cb0ff398bc70',      // 新地图解锁
+    // 激励广告3：绝世武器
+    legend: 'adunit-28846756092febb2',   // 绝世武器
   } as Record<string, string>,
   // 插屏广告（对局结算 / 返回主页时延迟展示，按游玩时长自适应频率）
   INTERSTITIAL_UNIT_ID: 'adunit-58f9fac6195e6a23',

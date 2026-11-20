@@ -177,8 +177,18 @@ export interface DropEnt {
   item: EquipDef | null;
   heal: number;
   cons: ConsumableId | null;
+  /** 金币面值（>0 表示金币，与装备/消耗品互斥） */
+  coin: number;
   baseY: number;
   t: number;
+  /** 金币弹跳 / 磁吸速度 */
+  vx: number;
+  vy: number;
+  vz: number;
+  /** 本帧世界坐标（拾取瞬间用于换算 HUD 飞行起点） */
+  px: number;
+  py: number;
+  pz: number;
 }
 
 /** 颜色加深/提亮（f<1 加深，f>1 提亮） */
@@ -237,6 +247,16 @@ function healDropBoxes(): BoxDef[] {
     { x: -0.15, y: 0, z: -0.15, w: 0.3, h: 0.3, d: 0.3, color: '#E53935' },
     { x: -0.11, y: 0.16, z: -0.16, w: 0.22, h: 0.06, d: 0.02, color: '#FFFFFF' },
     { x: -0.03, y: 0.08, z: -0.16, w: 0.06, h: 0.22, d: 0.02, color: '#FFFFFF' },
+  ];
+}
+
+/** 金币模型：扁平金币 + 亮边 + 中心方孔，自转时高光更明显 */
+function coinDropBoxes(): BoxDef[] {
+  return [
+    { x: -0.13, y: -0.13, z: -0.02, w: 0.26, h: 0.26, d: 0.045, color: '#FFD54F' },
+    { x: -0.15, y: -0.15, z: -0.025, w: 0.3, h: 0.3, d: 0.03, color: '#FFB300' },
+    { x: -0.05, y: -0.05, z: -0.03, w: 0.1, h: 0.1, d: 0.05, color: '#7A4B00' },
+    { x: -0.06, y: 0.06, z: -0.045, w: 0.12, h: 0.035, d: 0.02, color: '#FFF59D' },
   ];
 }
 
@@ -664,6 +684,24 @@ export class DropField {
     this.spawn(x, y, z, null, 0, id, consumableDropBoxes(id));
   }
 
+  /** 掉落金币：带初速度弹出，落地后自转，靠近玩家自动吸附 */
+  spawnCoin(x: number, y: number, z: number, value: number): void {
+    const node = new Node('coin');
+    node.parent = this.root;
+    node.setPosition(x, y + 0.35, z);
+    const mr = node.addComponent(MeshRenderer);
+    mr.mesh = buildBoxesMesh(coinDropBoxes());
+    mr.setSharedMaterial(getVoxMaterial(), 0);
+    const a = Math.random() * Math.PI * 2;
+    const sp = 1.1 + Math.random() * 1.6;
+    this.list.push({
+      node, item: null, heal: 0, cons: null, coin: value,
+      baseY: y + 0.12, t: Math.random() * 6,
+      vx: Math.cos(a) * sp, vy: 2.6 + Math.random() * 1.8, vz: Math.sin(a) * sp,
+      px: x, py: y + 0.35, pz: z,
+    });
+  }
+
   private spawn(
     x: number, y: number, z: number,
     item: EquipDef | null, heal: number, cons: ConsumableId | null,
@@ -675,7 +713,11 @@ export class DropField {
     const mr = node.addComponent(MeshRenderer);
     mr.mesh = buildBoxesMesh(boxes);
     mr.setSharedMaterial(getVoxMaterial(), 0);
-    this.list.push({ node, item, heal, cons, baseY: y + 0.25, t: Math.random() * 6 });
+    this.list.push({
+      node, item, heal, cons, coin: 0,
+      baseY: y + 0.25, t: Math.random() * 6,
+      vx: 0, vy: 0, vz: 0, px: x, py: y + 0.25, pz: z,
+    });
   }
 
   /** 返回本帧被玩家拾取的掉落物 */
@@ -684,8 +726,47 @@ export class DropField {
     for (let i = this.list.length - 1; i >= 0; i--) {
       const d = this.list[i];
       d.t += dt;
+
+      if (d.coin > 0) {
+        // 金币：重力弹跳 → 3.4m 内磁吸飞向玩家
+        d.vy -= 26 * dt;
+        let nx = d.node.position.x + d.vx * dt;
+        let ny = d.node.position.y + d.vy * dt;
+        let nz = d.node.position.z + d.vz * dt;
+        if (ny < d.baseY) {
+          ny = d.baseY;
+          d.vy = -d.vy * 0.38;
+          d.vx *= 0.72;
+          d.vz *= 0.72;
+          if (d.vy < 0.6) d.vy = 0;
+        }
+        const dx = px - nx;
+        const dy = py + 0.8 - ny;
+        const dz = pz - nz;
+        const dist2 = dx * dx + dy * dy + dz * dz;
+        if (dist2 < 3.4 * 3.4) {
+          const dist = Math.sqrt(dist2) || 1;
+          const pull = 36 * dt;
+          d.vx = d.vx * 0.93 + (dx / dist) * pull;
+          d.vy = d.vy * 0.93 + (dy / dist) * pull * 0.9;
+          d.vz = d.vz * 0.93 + (dz / dist) * pull;
+        }
+        d.node.setPosition(nx, ny, nz);
+        d.node.setRotationFromEuler(0, d.t * 520, 0);
+        d.px = nx; d.py = ny; d.pz = nz;
+        if (dist2 < 0.8 * 0.8) {
+          picked.push(d);
+          d.node.destroy();
+          this.list.splice(i, 1);
+        }
+        continue;
+      }
+
       d.node.setRotationFromEuler(0, d.t * 90, 0);
       d.node.setPosition(d.node.position.x, d.baseY + Math.sin(d.t * 2.4) * 0.1, d.node.position.z);
+      d.px = d.node.position.x;
+      d.py = d.node.position.y;
+      d.pz = d.node.position.z;
 
       const dx = d.node.position.x - px;
       const dy = d.node.position.y - (py + 0.9);
