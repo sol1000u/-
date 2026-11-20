@@ -1,0 +1,14 @@
+{
+  "ver": "1.2.0",
+  "importer": "directory",
+  "imported": true,
+  "uuid": "4d2178a3-18b2-4e89-8c27-dee7869ea1c3",
+  "files": [],
+  "subMetas": {},
+  "userData": {
+    "isBundle": true,
+    "bundleConfigID": "subpkg_audio",
+    "bundleName": "subpkg_audio",
+    "priority": 1
+  }
+}

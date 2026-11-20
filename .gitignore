@@ -1,0 +1,9 @@
+﻿
+private.*.key
+library/
+temp/
+profiles/
+.creator/
+mobface_backup_1920/
+build/web-mobile/
+*.log

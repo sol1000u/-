@@ -1,0 +1,86 @@
+{
+  "platform": "wechatgame",
+  "debug": false,
+  "outputName": "wechatgame",
+  "taskName": "wechatgame",
+  "buildMode": "normal",
+  "mainBundleCompressionType": "merge_dep",
+  "packages": {
+    "wechatgame": {
+      "orientation": "landscape",
+      "appid": "wxef34c41cccce9de2",
+      "buildOpenDataContextTemplate": "",
+      "separateEngine": false,
+      "highPerformanceMode": false
+    }
+  },
+  "name": "cocos-dogcat",
+  "server": "",
+  "engineModulesConfigKey": "defaultConfig",
+  "buildPath": "project://build",
+  "mangleProperties": false,
+  "md5Cache": false,
+  "skipCompressTexture": false,
+  "sourceMaps": false,
+  "overwriteProjectSettings": {
+    "macroConfig": {
+      "cleanupImageCache": "on"
+    },
+    "includeModules": {
+      "physics": "inherit-project-setting",
+      "physics-2d": "inherit-project-setting",
+      "gfx-webgl2": "off",
+      "spine": "off",
+      "dragon-bones": "off",
+      "tiled-map": "off"
+    }
+  },
+  "nativeCodeBundleMode": "wasm",
+  "polyfills": {
+    "asyncFunctions": false
+  },
+  "experimentalEraseModules": false,
+  "startSceneAssetBundle": false,
+  "bundleConfigs": [
+    {
+      "name": "resources",
+      "root": "db://assets/resources",
+      "priority": 8,
+      "compressionType": "merge_dep",
+      "isRemote": false,
+      "output": true
+    },
+    {
+      "name": "subpkg_audio",
+      "root": "db://assets/subpkg_audio",
+      "priority": 1,
+      "compressionType": "subpackage",
+      "isRemote": false,
+      "output": true
+    }
+  ],
+  "inlineEnum": true,
+  "useBuiltinServer": false,
+  "md5CacheOptions": {
+    "excludes": [],
+    "includes": [],
+    "replaceOnly": [],
+    "handleTemplateMd5Link": true
+  },
+  "mainBundleIsRemote": false,
+  "useSplashScreen": true,
+  "bundleCommonChunk": false,
+  "packAutoAtlas": true,
+  "startScene": "5c2a9e71-3b48-4d6f-8a17-9e0c4b2d7f35",
+  "scenes": [
+    {
+      "url": "db://assets/scenes/main.scene",
+      "uuid": "5c2a9e71-3b48-4d6f-8a17-9e0c4b2d7f35"
+    }
+  ],
+  "wasmCompressionMode": false,
+  "binGroupConfig": {
+    "threshold": 16,
+    "enable": false
+  }
+}
